@@ -79,9 +79,524 @@ def extract_font_metrics(char_data):
 
 
 # Function to extract text metadata from a PDF file
+def extract_table_with_debug_visualization(page, save_debug_image=False, debug_image_path=None):
+    """
+    Simple table extraction using PageImage.debug_tablefinder() visualization approach.
+    Based on the notebook examples for better table detection.
+    
+    Args:
+        page: pdfplumber page object
+        save_debug_image: Whether to save debug visualization image
+        debug_image_path: Path to save debug image (optional)
+        
+    Returns:
+        Dictionary with table data and debug info
+    """
+    tables_found = []
+    
+    try:
+        # Create page image for debugging
+        page_image = page.to_image()
+        
+        # Try different table settings like in the notebooks
+        table_settings_options = [
+            # Default settings
+            {},
+            # NICS-style settings (mixed lines and text strategy)
+            {
+                "vertical_strategy": "lines",
+                "horizontal_strategy": "text",
+                "snap_y_tolerance": 5,
+                "intersection_x_tolerance": 15,
+            },
+            # CA-WARN-style settings (strict lines)
+            {
+                "vertical_strategy": "lines",
+                "horizontal_strategy": "lines"
+            },
+            # Text-based detection
+            {
+                "vertical_strategy": "text",
+                "horizontal_strategy": "text",
+                "min_words_vertical": 2,
+                "min_words_horizontal": 1
+            }
+        ]
+        
+        best_table = None
+        best_settings = None
+        
+        for i, settings in enumerate(table_settings_options):
+            try:
+                # Debug the table finder to see what it detects
+                debug_finder = page_image.debug_tablefinder(settings)
+                
+                # Extract table with these settings
+                table = page.extract_table(settings)
+                
+                if table and len(table) > 1:
+                    # Count meaningful rows (with actual content)
+                    meaningful_rows = 0
+                    for row in table:
+                        non_empty_cells = sum(1 for cell in row if cell and str(cell).strip())
+                        if non_empty_cells >= 2:  # At least 2 cells with content
+                            meaningful_rows += 1
+                    
+                    # Keep the table with most meaningful content
+                    if meaningful_rows > 1 and (best_table is None or meaningful_rows > len(best_table)):
+                        best_table = table
+                        best_settings = settings
+                        
+                        logger.debug(f"Table settings {i}: Found table with {len(table)} rows, {meaningful_rows} meaningful rows")
+                
+            except Exception as e:
+                logger.debug(f"Table settings {i} failed: {e}")
+                continue
+        
+        # If we found a good table, process it
+        if best_table:
+            # Clean and structure the table data
+            cleaned_rows = []
+            for row in best_table:
+                cleaned_row = []
+                for cell in row:
+                    if cell is None:
+                        cleaned_row.append("")
+                    else:
+                        # Clean up spacing (like "0 3 / 2 5 / 2 0 16" -> "03/25/2016")
+                        cleaned_cell = str(cell).replace(" ", "") if isinstance(cell, str) and "/" in str(cell) else str(cell)
+                        cleaned_row.append(cleaned_cell)
+                cleaned_rows.append(cleaned_row)
+            
+            # Extract translatable cells
+            translatable_cells = []
+            for row_idx, row in enumerate(cleaned_rows):
+                row_cells = []
+                for col_idx, cell in enumerate(row):
+                    if cell and str(cell).strip():
+                        row_cells.append({
+                            "text": str(cell).strip(),
+                            "row": row_idx,
+                            "column": col_idx,
+                            "translatable": True
+                        })
+                if row_cells:
+                    translatable_cells.append(row_cells)
+            
+            table_info = {
+                "table_id": 0,
+                "strategy": "debug_visualization",
+                "settings_used": best_settings,
+                "raw_table": best_table,
+                "cleaned_table": cleaned_rows,
+                "translatable_cells": translatable_cells,
+                "rows": len(cleaned_rows),
+                "columns": len(cleaned_rows[0]) if cleaned_rows else 0,
+                "success": True
+            }
+            
+            tables_found.append(table_info)
+            
+            # Save debug image if requested
+            if save_debug_image and debug_image_path:
+                try:
+                    debug_image = page_image.debug_tablefinder(best_settings)
+                    # Note: In actual implementation, you'd save the debug_image
+                    logger.info(f"Debug visualization would be saved to: {debug_image_path}")
+                except Exception as e:
+                    logger.warning(f"Could not save debug image: {e}")
+        
+        return {
+            "tables": tables_found,
+            "debug_info": {
+                "settings_tested": len(table_settings_options),
+                "best_settings": best_settings,
+                "success": len(tables_found) > 0
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Debug table extraction failed: {e}")
+        return {"tables": [], "debug_info": {"success": False, "error": str(e)}}
+
+
+def extract_table_data(page):
+    """
+    Extract table data from a PDF page using pdfplumber's table detection with multiple strategies.
+    
+    Args:
+        page: pdfplumber page object
+        
+    Returns:
+        List of table dictionaries with extracted text and metadata
+    """
+    tables_data = []
+    
+    # Try different table detection strategies
+    strategies = [
+        {"name": "lines", "settings": {"vertical_strategy": "lines", "horizontal_strategy": "lines"}},
+        {"name": "text", "settings": {"vertical_strategy": "text", "horizontal_strategy": "text", "min_words_vertical": 2, "min_words_horizontal": 1}},
+        {"name": "lines_strict", "settings": {"vertical_strategy": "lines_strict", "horizontal_strategy": "lines_strict"}},
+    ]
+    
+    found_tables = []
+    
+    for strategy in strategies:
+        try:
+            # Find tables using this strategy
+            tables = page.find_tables(table_settings=strategy["settings"])
+            
+            if tables:
+                logger.debug(f"Strategy '{strategy['name']}' found {len(tables)} tables")
+                
+                for table_idx, table in enumerate(tables):
+                    # Extract table content
+                    table_content = table.extract()
+                    
+                    # Only process tables with meaningful content (more than 1 row/column with actual text)
+                    if table_content and len(table_content) > 1:
+                        non_empty_rows = sum(1 for row in table_content if any(cell and cell.strip() for cell in row))
+                        if non_empty_rows > 1:  # At least 2 rows with content
+                            
+                            # Get table bounding box
+                            bbox = table.bbox
+                            
+                            # Check if this table is already found by previous strategy (avoid duplicates)
+                            is_duplicate = False
+                            for existing_table in found_tables:
+                                # Check if bounding boxes overlap significantly
+                                existing_bbox = existing_table["bbox"]
+                                overlap_x = max(0, min(bbox[2], existing_bbox["x1"]) - max(bbox[0], existing_bbox["x0"]))
+                                overlap_y = max(0, min(bbox[3], existing_bbox["y1"]) - max(bbox[1], existing_bbox["y0"]))
+                                overlap_area = overlap_x * overlap_y
+                                
+                                current_area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+                                if overlap_area > current_area * 0.7:  # 70% overlap threshold
+                                    is_duplicate = True
+                                    break
+                            
+                            if not is_duplicate:
+                                # Extract table metadata
+                                table_info = {
+                                    "table_id": len(found_tables),
+                                    "strategy": strategy["name"],
+                                    "bbox": {"x0": bbox[0], "y0": bbox[1], "x1": bbox[2], "y1": bbox[3]},
+                                    "content": table_content,
+                                    "rows": len(table_content),
+                                    "columns": len(table_content[0]) if table_content and table_content[0] else 0,
+                                    "cells": table.cells if hasattr(table, 'cells') else None
+                                }
+                                
+                                # Extract text from each cell for translation
+                                cell_texts = []
+                                for row_idx, row in enumerate(table_content):
+                                    row_texts = []
+                                    for col_idx, cell in enumerate(row):
+                                        if cell and cell.strip():  # Only include non-empty cells
+                                            cell_info = {
+                                                "text": cell.strip(),
+                                                "row": row_idx,
+                                                "column": col_idx,
+                                                "translatable": True
+                                            }
+                                            row_texts.append(cell_info)
+                                    if row_texts:
+                                        cell_texts.append(row_texts)
+                                
+                                table_info["translatable_cells"] = cell_texts
+                                found_tables.append(table_info)
+                                
+                                logger.debug(f"Extracted table {table_info['table_id']} using '{strategy['name']}': {table_info['rows']}x{table_info['columns']} cells")
+                
+        except Exception as e:
+            logger.warning(f"Error with strategy '{strategy['name']}': {e}")
+    
+    return found_tables
+
+
+def extract_table_with_custom_settings(page, table_settings=None):
+    """
+    Extract table using custom settings optimized for specific document types.
+    Based on techniques from extract-table-nics.ipynb and extract-table-ca-warn-report.ipynb
+    
+    Args:
+        page: pdfplumber page object
+        table_settings: Custom table settings dictionary
+        
+    Returns:
+        Dictionary with table data and metadata
+    """
+    if table_settings is None:
+        # Default optimized settings for mixed content documents
+        table_settings = {
+            "vertical_strategy": "lines",
+            "horizontal_strategy": "text", 
+            "snap_y_tolerance": 5,
+            "intersection_x_tolerance": 15,
+            "intersection_y_tolerance": 3,
+            "min_words_vertical": 2,
+            "min_words_horizontal": 1
+        }
+    
+    try:
+        # Extract the largest/most significant table
+        table = page.extract_table(table_settings)
+        
+        if table and len(table) > 1:
+            # Clean up the extracted data
+            cleaned_table = []
+            
+            for row in table:
+                # Remove None values and clean up cells
+                cleaned_row = []
+                for cell in row:
+                    if cell is None:
+                        cleaned_row.append("")
+                    else:
+                        # Clean up spacing issues (like "0 3 / 2 5 / 2 0 16" -> "03/25/2016")
+                        cleaned_cell = str(cell).replace(" ", "") if isinstance(cell, str) else str(cell)
+                        cleaned_row.append(cleaned_cell)
+                cleaned_table.append(cleaned_row)
+            
+            # Detect header row (usually first non-empty row)
+            header_row = None
+            data_rows = []
+            
+            for i, row in enumerate(cleaned_table):
+                # Check if row has meaningful content
+                non_empty_cells = [cell for cell in row if cell and cell.strip()]
+                if len(non_empty_cells) > 1:  # At least 2 non-empty cells
+                    if header_row is None:
+                        header_row = row
+                    else:
+                        data_rows.append(row)
+            
+            if header_row and data_rows:
+                return {
+                    "extraction_method": "custom_settings",
+                    "settings_used": table_settings,
+                    "raw_table": table,
+                    "header": header_row,
+                    "data_rows": data_rows,
+                    "total_rows": len(data_rows),
+                    "total_columns": len(header_row),
+                    "success": True
+                }
+    
+    except Exception as e:
+        logger.warning(f"Custom table extraction failed: {e}")
+    
+    return {"success": False, "extraction_method": "custom_settings"}
+
+
+def extract_table_with_cropping(page, crop_bbox=None):
+    """
+    Extract table from a specific region of the page using cropping technique.
+    Based on the cropping approach from the sample notebooks.
+    
+    Args:
+        page: pdfplumber page object
+        crop_bbox: Tuple (x0, y0, x1, y1) for cropping region, or None for auto-detection
+        
+    Returns:
+        Dictionary with table data and metadata
+    """
+    try:
+        # If no crop box specified, try to auto-detect table regions
+        if crop_bbox is None:
+            # Find potential table regions by analyzing line density
+            lines = page.lines
+            rects = page.rects
+            
+            if lines or rects:
+                # Calculate bounding box of all lines/rectangles
+                all_objects = lines + rects
+                if all_objects:
+                    x0 = min(obj['x0'] for obj in all_objects)
+                    y0 = min(obj['y0'] for obj in all_objects) 
+                    x1 = max(obj['x1'] for obj in all_objects)
+                    y1 = max(obj['y1'] for obj in all_objects)
+                    
+                    # Add some padding
+                    padding = 10
+                    crop_bbox = (
+                        max(0, x0 - padding),
+                        max(0, y0 - padding), 
+                        min(page.width, x1 + padding),
+                        min(page.height, y1 + padding)
+                    )
+        
+        # Apply cropping if we have a region
+        if crop_bbox:
+            cropped_page = page.crop(crop_bbox)
+            
+            # Try multiple extraction strategies on cropped region
+            strategies = [
+                {"vertical_strategy": "lines", "horizontal_strategy": "lines"},
+                {"vertical_strategy": "lines", "horizontal_strategy": "text", "snap_y_tolerance": 3},
+                {"vertical_strategy": "text", "horizontal_strategy": "text", "min_words_vertical": 2}
+            ]
+            
+            for strategy in strategies:
+                try:
+                    table = cropped_page.extract_table(strategy)
+                    if table and len(table) > 1:
+                        # Filter out rows with mostly empty cells
+                        filtered_table = []
+                        for row in table:
+                            non_empty = sum(1 for cell in row if cell and str(cell).strip())
+                            if non_empty >= len(row) * 0.3:  # At least 30% non-empty cells
+                                filtered_table.append(row)
+                        
+                        if len(filtered_table) > 1:
+                            return {
+                                "extraction_method": "cropping",
+                                "crop_bbox": crop_bbox,
+                                "strategy_used": strategy,
+                                "raw_table": table,
+                                "filtered_table": filtered_table,
+                                "total_rows": len(filtered_table),
+                                "total_columns": len(filtered_table[0]) if filtered_table else 0,
+                                "success": True
+                            }
+                            
+                except Exception as e:
+                    continue
+        
+        # Fallback to full page extraction
+        table = page.extract_table()
+        if table and len(table) > 1:
+            return {
+                "extraction_method": "cropping_fallback",
+                "crop_bbox": None,
+                "raw_table": table,
+                "total_rows": len(table),
+                "total_columns": len(table[0]) if table else 0,
+                "success": True
+            }
+            
+    except Exception as e:
+        logger.warning(f"Cropping table extraction failed: {e}")
+    
+    return {"success": False, "extraction_method": "cropping"}
+
+
+def extract_translatable_cells_from_structured_table(header, data_rows):
+    """
+    Extract translatable cells from a structured table with header and data rows.
+    """
+    translatable_cells = []
+    
+    if header and data_rows:
+        # Add header as first row
+        header_row = []
+        for col_idx, cell in enumerate(header):
+            if cell and str(cell).strip():
+                header_row.append({
+                    "text": str(cell).strip(),
+                    "row": 0,
+                    "column": col_idx,
+                    "translatable": True,
+                    "is_header": True
+                })
+        if header_row:
+            translatable_cells.append(header_row)
+        
+        # Add data rows
+        for row_idx, row in enumerate(data_rows):
+            row_cells = []
+            for col_idx, cell in enumerate(row):
+                if cell and str(cell).strip():
+                    row_cells.append({
+                        "text": str(cell).strip(),
+                        "row": row_idx + 1,  # +1 because header is row 0
+                        "column": col_idx,
+                        "translatable": True,
+                        "is_header": False
+                    })
+            if row_cells:
+                translatable_cells.append(row_cells)
+    
+    return translatable_cells
+
+
+def extract_translatable_cells_from_raw_table(raw_table):
+    """
+    Extract translatable cells from a raw table (list of lists).
+    """
+    translatable_cells = []
+    
+    if raw_table:
+        for row_idx, row in enumerate(raw_table):
+            row_cells = []
+            for col_idx, cell in enumerate(row):
+                if cell and str(cell).strip():
+                    row_cells.append({
+                        "text": str(cell).strip(),
+                        "row": row_idx,
+                        "column": col_idx,
+                        "translatable": True,
+                        "is_header": row_idx == 0  # Assume first row is header
+                    })
+            if row_cells:
+                translatable_cells.append(row_cells)
+    
+    return translatable_cells
+
+
+def is_text_in_table(paragraph_bbox, tables):
+    """
+    Check if a paragraph's bounding box overlaps with any table on the page.
+    
+    Args:
+        paragraph_bbox: Bounding box dictionary with x0, y0, x1, y1
+        tables: List of table dictionaries with bbox information
+        
+    Returns:
+        bool: True if paragraph overlaps with any table
+    """
+    # Skip if no tables or empty tables list
+    if not tables:
+        return False
+        
+    try:
+        p_x0, p_y0, p_x1, p_y1 = paragraph_bbox["x0"], paragraph_bbox["y0"], paragraph_bbox["x1"], paragraph_bbox["y1"]
+        
+        for table in tables:
+            # Skip tables without bbox (from debug visualization method)
+            if "bbox" not in table:
+                continue
+                
+            t_bbox = table["bbox"]
+            
+            # Handle different bbox formats
+            if isinstance(t_bbox, dict):
+                t_x0, t_y0, t_x1, t_y1 = t_bbox["x0"], t_bbox["y0"], t_bbox["x1"], t_bbox["y1"]
+            elif isinstance(t_bbox, (list, tuple)) and len(t_bbox) >= 4:
+                t_x0, t_y0, t_x1, t_y1 = t_bbox[0], t_bbox[1], t_bbox[2], t_bbox[3]
+            else:
+                continue  # Skip malformed bbox
+            
+            # Check for overlap using intersection logic
+            overlap_x = max(0, min(p_x1, t_x1) - max(p_x0, t_x0))
+            overlap_y = max(0, min(p_y1, t_y1) - max(p_y0, t_y0))
+            overlap_area = overlap_x * overlap_y
+            
+            # If there's significant overlap (> 50% of paragraph area), consider it part of table
+            paragraph_area = (p_x1 - p_x0) * (p_y1 - p_y0)
+            if paragraph_area > 0 and overlap_area > paragraph_area * 0.5:
+                return True
+        
+        return False
+        
+    except Exception as e:
+        logger.debug(f"Error checking table overlap: {e}")
+        return False  # If error, assume not in table
+
+
 def extract_text_metadata(pdf_path, max_pages=None):
     """
-    Extract text metadata from a PDF file, including character width measurements.
+    Extract text metadata from a PDF file, including character width measurements and table detection.
 
     Args:
         pdf_path: Path to the PDF file.
@@ -90,7 +605,7 @@ def extract_text_metadata(pdf_path, max_pages=None):
     Returns:
         Dictionary containing text metadata for all processed pages.
     """
-    all_pages_data = {"paragraphs": [], "lines": [], "words": [], "chars": [], "font_metrics": {}}
+    all_pages_data = {"paragraphs": [], "lines": [], "words": [], "chars": [], "font_metrics": {}, "tables": []}
 
     try:
         with pdfplumber.open(pdf_path) as pdf:
@@ -126,32 +641,48 @@ def extract_text_metadata(pdf_path, max_pages=None):
                     # Extract words
                     words = page.extract_words()
 
+                    # Extract table data using simple debug visualization approach
+                    table_result = extract_table_with_debug_visualization(page)
+                    table_data = table_result["tables"]
+                    
+                    # Add page number to each table
+                    for table in table_data:
+                        table["page_number"] = page_number
+
                     # Detect lines and paragraphs
                     lines, paragraphs = detect_lines_and_paragraphs(char_data)
 
-                    # Add page number and font metrics to each paragraph
+                    # Filter out paragraphs that are part of tables to avoid duplication
+                    filtered_paragraphs = []
                     for paragraph in paragraphs:
-                        paragraph["page_number"] = page_number
-                        # Add font metrics reference for precise width calculation
-                        font_key = f"{paragraph.get('font_name', 'Unknown')}_{paragraph.get('font_size', 12)}"
-                        if font_key in all_pages_data["font_metrics"]:
-                            paragraph["font_metrics"] = all_pages_data["font_metrics"][font_key]
+                        if not is_text_in_table(paragraph["bounding_box"], table_data):
+                            paragraph["page_number"] = page_number
+                            # Add font metrics reference for precise width calculation
+                            font_key = f"{paragraph.get('font_name', 'Unknown')}_{paragraph.get('font_size', 12)}"
+                            if font_key in all_pages_data["font_metrics"]:
+                                paragraph["font_metrics"] = all_pages_data["font_metrics"][font_key]
+                            filtered_paragraphs.append(paragraph)
+                        else:
+                            logger.debug(f"Filtered out paragraph (part of table): {paragraph['text'][:50]}...")
+                    
+                    paragraphs = filtered_paragraphs
 
                     # Add data to the aggregated result
                     all_pages_data["paragraphs"].extend(paragraphs)
                     all_pages_data["lines"].extend(lines)
                     all_pages_data["words"].extend(words)
                     all_pages_data["chars"].extend(char_data)
+                    all_pages_data["tables"].extend(table_data)
 
                     logger.debug(
-                        f"Processed page {page_number} with {len(paragraphs)} paragraphs and {len(font_metrics)} font variants"
+                        f"Processed page {page_number} with {len(paragraphs)} paragraphs, {len(table_data)} tables, and {len(font_metrics)} font variants"
                     )
 
                 except Exception as e:
                     logger.error(f"Error processing page {page_number}: {e}")
 
             logger.info(
-                f"Extracted {len(all_pages_data['paragraphs'])} paragraphs from {len(pages_to_process)} pages"
+                f"Extracted {len(all_pages_data['paragraphs'])} paragraphs and {len(all_pages_data['tables'])} tables from {len(pages_to_process)} pages"
             )
             logger.info(
                 f"Collected font metrics for {len(all_pages_data['font_metrics'])} font variants"

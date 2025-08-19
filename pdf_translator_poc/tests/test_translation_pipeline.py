@@ -35,6 +35,7 @@ def translate_pdf_complete(
     input_pdf_path,
     output_pdf_path,
     target_language=DEFAULT_TARGET_LANGUAGE,
+    source_language=None,
     font_dir=None,
     temp_dir=None,
     max_pages=None,
@@ -47,6 +48,7 @@ def translate_pdf_complete(
         input_pdf_path: Path to input PDF file
         output_pdf_path: Path to save translated PDF
         target_language: Target language code (e.g., 'vi', 'en', 'ja')
+        source_language: Source language code (e.g., 'vi', 'en', 'ja') - None for auto-detect
         font_dir: Directory containing font files
         temp_dir: Directory for temporary files
         max_pages: Maximum number of pages to process (None for all)
@@ -59,6 +61,7 @@ def translate_pdf_complete(
         logger.info(f"Starting PDF translation pipeline")
         logger.info(f"Input: {input_pdf_path}")
         logger.info(f"Output: {output_pdf_path}")
+        logger.info(f"Source language: {source_language or 'auto-detect'}")
         logger.info(f"Target language: {target_language}")
         logger.info(f"Max pages: {max_pages or 'all'}")
         
@@ -86,6 +89,12 @@ def translate_pdf_complete(
             
         logger.info(f"Extracted {len(extracted_data['paragraphs'])} paragraphs")
         
+        # Log table extraction results if any tables found
+        if extracted_data.get("tables"):
+            logger.info(f"Extracted {len(extracted_data['tables'])} tables")
+            for i, table in enumerate(extracted_data['tables']):
+                logger.info(f"  Table {i}: {table['rows']}x{table['columns']} (strategy: {table['strategy']})")
+        
         # Save extracted data if debug mode
         if debug:
             with open(extracted_json, 'w', encoding='utf-8') as f:
@@ -94,7 +103,11 @@ def translate_pdf_complete(
         
         # Step 2: Translate paragraphs
         logger.info("Step 2: Translating paragraphs...")
-        translated_paragraphs = translate_paragraphs(extracted_data["paragraphs"], target_language)
+        translated_paragraphs = translate_paragraphs(
+            extracted_data["paragraphs"], 
+            target_language, 
+            source_language=source_language
+        )
         
         if not translated_paragraphs:
             logger.error("Translation failed")
@@ -187,6 +200,12 @@ def main():
     parser = argparse.ArgumentParser(description="Test the PDF translation pipeline")
     parser.add_argument("pdf_path", help="Path to the PDF file to translate")
     parser.add_argument(
+        "-s",
+        "--source",
+        default=None,
+        help="Source language code (e.g., 'vi', 'en', 'ja') - auto-detect if not specified",
+    )
+    parser.add_argument(
         "-t",
         "--target",
         default=DEFAULT_TARGET_LANGUAGE,
@@ -227,6 +246,7 @@ def main():
     os.makedirs(temp_dir, exist_ok=True)
 
     logger.info(f"Starting translation test of: {args.pdf_path}")
+    logger.info(f"Source language: {args.source or 'auto-detect'}")
     logger.info(f"Target language: {args.target}")
     logger.info(f"Output will be saved to: {output_pdf}")
 
@@ -237,6 +257,7 @@ def main():
             input_pdf_path=args.pdf_path,
             output_pdf_path=output_pdf,
             target_language=args.target,
+            source_language=args.source,
             font_dir=args.font_dir,
             temp_dir=temp_dir,
             max_pages=2,  # Process only 2 pages

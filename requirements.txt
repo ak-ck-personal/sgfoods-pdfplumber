@@ -1,0 +1,5 @@
+pdfplumber
+PyPDF2
+reportlab
+boto3
+botocore

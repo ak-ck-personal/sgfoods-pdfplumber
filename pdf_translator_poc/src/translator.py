@@ -70,7 +70,7 @@ def check_translation_memory(text_block, target_language):
 
 
 def translate_text(
-    text_block, target_language, max_retries=MAX_RETRIES, retry_delay=RETRY_DELAY
+    text_block, target_language, source_language=None, max_retries=MAX_RETRIES, retry_delay=RETRY_DELAY
 ):
     """
     Translate text using AWS Translate with retry logic.
@@ -78,6 +78,7 @@ def translate_text(
     Args:
         text_block: Text to translate
         target_language: Target language code (e.g., 'en', 'vi', 'ja')
+        source_language: Source language code (None for auto-detection)
         max_retries: Maximum number of retry attempts
         retry_delay: Delay between retries in seconds
 
@@ -107,7 +108,7 @@ def translate_text(
         try:
             response = translate_client.translate_text(
                 Text=text_block,
-                SourceLanguageCode="auto",
+                SourceLanguageCode=source_language or "auto",
                 TargetLanguageCode=target_language,
             )
 
@@ -189,7 +190,7 @@ def save_to_translation_memory(source_text, translated_text, target_language):
 
 
 def batch_translate(
-    text_blocks, target_language, max_retries=MAX_RETRIES, batch_size=None
+    text_blocks, target_language, source_language=None, max_retries=MAX_RETRIES, batch_size=None
 ):
     """
     Translate multiple text blocks efficiently.
@@ -197,6 +198,7 @@ def batch_translate(
     Args:
         text_blocks: List of text blocks to translate
         target_language: Target language code
+        source_language: Source language code (None for auto-detection)
         max_retries: Maximum retry attempts per block
         batch_size: Number of texts to process in each batch (None = use setting)
 
@@ -222,7 +224,7 @@ def batch_translate(
 
         for block in batch:
             try:
-                translated_block = translate_text(block, target_language, max_retries)
+                translated_block = translate_text(block, target_language, source_language, max_retries)
                 translated_blocks.append(translated_block)
 
                 if translated_block != block:  # If translation succeeded
@@ -248,13 +250,14 @@ def batch_translate(
     return translated_blocks
 
 
-def translate_paragraphs(paragraphs, target_language):
+def translate_paragraphs(paragraphs, target_language, source_language=None):
     """
     Translate a list of paragraphs while preserving their metadata.
 
     Args:
         paragraphs: List of paragraph dictionaries with text and metadata
         target_language: Target language code
+        source_language: Source language code (None for auto-detection)
 
     Returns:
         List of paragraph dictionaries with translated text and preserved metadata
@@ -263,7 +266,7 @@ def translate_paragraphs(paragraphs, target_language):
     text_blocks = [p.get("text", "") for p in paragraphs]
 
     # Translate all text blocks
-    translated_blocks = batch_translate(text_blocks, target_language)
+    translated_blocks = batch_translate(text_blocks, target_language, source_language)
 
     # Reconstruct paragraphs with translated text
     translated_paragraphs = []

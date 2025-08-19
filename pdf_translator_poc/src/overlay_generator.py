@@ -25,6 +25,16 @@ except ImportError:
         logger.warning("Google Fonts integration not available")
         get_or_download_font = None
 
+# Register fallback fonts for Latin and Japanese text
+try:
+    pdfmetrics.registerFont(TTFont("NotoSans", "fonts/Noto_Sans/static/NotoSans-Regular.ttf"))
+    pdfmetrics.registerFont(TTFont("NotoSerif", "fonts/Noto_Serif/static/NotoSerif-Regular.ttf"))
+    pdfmetrics.registerFont(TTFont("NotoSansJP", "fonts/Noto_Sans_JP/static/NotoSansJP-Regular.ttf"))
+    pdfmetrics.registerFont(TTFont("NotoSerifJP", "fonts/Noto_Serif_JP/static/NotoSerifJP-Regular.ttf"))
+    logger.info("Registered default Noto fonts")
+except Exception as e:
+    logger.warning(f"Could not register default Noto fonts: {e}")
+
 # Font configurations - Special case fonts for specific languages
 FONT_CONFIG = {
     "ja": "NotoSansJP-Regular",  # Japanese translation uses special font
@@ -37,6 +47,216 @@ AVAILABLE_FONTS = {"default": True}
 
 # Dynamic font registry for downloaded Google Fonts
 GOOGLE_FONTS_REGISTRY = {}
+
+# Font family mapping - maps common font families to available fonts
+FONT_FAMILY_MAPPING = {
+    # Sans-serif fonts
+    "arial": "sans",
+    "helvetica": "sans", 
+    "gotham": "sans",
+    "calibri": "sans",
+    "verdana": "sans",
+    "tahoma": "sans",
+    "geneva": "sans",
+    "lucida": "sans",
+    "franklin": "sans",
+    "futura": "sans",
+    "avenir": "sans",
+    "proxima": "sans",
+    "lato": "sans",
+    "opensans": "sans",
+    "roboto": "sans",
+    "sourcesans": "sans",
+    
+    # Serif fonts  
+    "times": "serif",
+    "timesnewroman": "serif",
+    "georgia": "serif",
+    "garamond": "serif",
+    "minion": "serif",
+    "palatino": "serif",
+    "bookman": "serif",
+    "caslon": "serif",
+    "baskerville": "serif",
+    "centennial": "serif",
+    "utopia": "serif",
+    "charter": "serif",
+    "crimson": "serif",
+    "sourceserif": "serif",
+    "ptserif": "serif",
+    
+    # Monospace fonts (treated as sans for simplicity)
+    "courier": "sans",
+    "consolas": "sans",
+    "monaco": "sans",
+    "menlo": "sans",
+}
+
+# Available font styles and their corresponding file patterns
+FONT_STYLE_MAPPING = {
+    "sans": {
+        "regular": "fonts/Noto_Sans/static/NotoSans-Regular.ttf",
+        "bold": "fonts/Noto_Sans/static/NotoSans-Bold.ttf", 
+        "italic": "fonts/Noto_Sans/static/NotoSans-Italic.ttf",
+        "bolditalic": "fonts/Noto_Sans/static/NotoSans-BoldItalic.ttf",
+    },
+    "serif": {
+        "regular": "fonts/Noto_Serif/static/NotoSerif-Regular.ttf",
+        "bold": "fonts/Noto_Serif/static/NotoSerif-Bold.ttf",
+        "italic": "fonts/Noto_Serif/static/NotoSerif-Italic.ttf", 
+        "bolditalic": "fonts/Noto_Serif/static/NotoSerif-BoldItalic.ttf",
+    },
+    "sans_jp": {
+        "regular": "fonts/Noto_Sans_JP/static/NotoSansJP-Regular.ttf",
+        "bold": "fonts/Noto_Sans_JP/static/NotoSansJP-Bold.ttf",
+    },
+    "serif_jp": {
+        "regular": "fonts/Noto_Serif_JP/static/NotoSerifJP-Regular.ttf", 
+        "bold": "fonts/Noto_Serif_JP/static/NotoSerifJP-Bold.ttf",
+    }
+}
+
+
+def parse_font_name(font_name):
+    """
+    Parse a font name to extract family and style information.
+    
+    Args:
+        font_name: Font name from PDF (e.g., "IJCIDQ+Gotham-Book", "Gotham-Italic", "Times-Bold")
+    
+    Returns:
+        tuple: (family, style) where family is the font family and style is the font style
+    """
+    if not font_name:
+        return "helvetica", "regular"
+    
+    # Remove font subset prefix (e.g., "IJCIDQ+")
+    if "+" in font_name:
+        font_name = font_name.split("+", 1)[1]
+    
+    # Handle comma-separated styles (e.g., "Times New Roman,Bold")
+    if "," in font_name:
+        parts = font_name.split(",")
+        base_font = parts[0].strip()
+        style_part = parts[1].strip().lower() if len(parts) > 1 else ""
+        
+        # Determine style from the comma-separated part
+        if "bold" in style_part and "italic" in style_part:
+            style = "bolditalic"
+        elif "bold" in style_part:
+            style = "bold"
+        elif "italic" in style_part or "oblique" in style_part:
+            style = "italic"
+        else:
+            style = "regular"
+        
+        # Clean and normalize the base font name
+        family = base_font.lower().replace(" ", "").replace("-", "").replace("_", "")
+        
+    else:
+        # Original parsing logic for dash-separated styles
+        font_name_lower = font_name.lower()
+        style = "regular"
+        family = font_name_lower
+        
+        # Check for style indicators in font name
+        style_indicators = {
+            "bold": ["bold", "heavy", "black", "extrabold", "semibold", "demibold"],
+            "italic": ["italic", "oblique", "slant"],
+            "bolditalic": ["bolditalic", "boldobl", "heavyitalic", "blackitalic"]
+        }
+        
+        # First check for bold+italic combinations
+        for style_name, indicators in style_indicators.items():
+            for indicator in indicators:
+                if indicator in font_name_lower:
+                    if style_name == "bolditalic":
+                        style = "bolditalic"
+                        family = font_name_lower.replace(indicator, "").strip("-_ ")
+                        break
+        
+        # If not bold+italic, check for individual styles
+        if style == "regular":
+            for style_name, indicators in style_indicators.items():
+                if style_name == "bolditalic":
+                    continue
+                for indicator in indicators:
+                    if indicator in font_name_lower:
+                        style = style_name
+                        family = font_name_lower.replace(indicator, "").strip("-_ ")
+                        break
+                if style != "regular":
+                    break
+        
+        # Clean up family name - remove common suffixes/prefixes and punctuation
+        family = family.replace("-", "").replace("_", "").replace(" ", "").strip()
+        
+        # Remove common style suffixes that might remain (but be careful with "Times New Roman")
+        if family != "timesnewroman":  # Don't strip "roman" from "Times New Roman"
+            style_suffixes = ["regular", "normal", "roman", "book", "medium", "light", "thin", "mt"]
+            for suffix in style_suffixes:
+                if family.endswith(suffix):
+                    family = family[:-len(suffix)].strip()
+                    break
+    
+    # If family is empty after cleaning, use a default
+    if not family:
+        family = "helvetica"
+    
+    logger.debug(f"Parsed font '{font_name}' -> family: '{family}', style: '{style}'")
+    return family, style
+
+
+def get_mapped_font_path(font_family, font_style, target_language="vi"):
+    """
+    Get the appropriate font path based on font family, style, and target language.
+    Also registers the font with ReportLab if not already registered.
+    
+    Args:
+        font_family: Cleaned font family name
+        font_style: Font style (regular, bold, italic, bolditalic)  
+        target_language: Target language code
+    
+    Returns:
+        tuple: (font_path, font_name) or (None, None) if not found
+    """
+    # Determine font category based on language and family
+    if target_language == "ja":
+        # For Japanese, prefer serif for serif families, otherwise sans
+        font_category = FONT_FAMILY_MAPPING.get(font_family, "sans")
+        if font_category == "serif":
+            font_category = "serif_jp"
+        else:
+            font_category = "sans_jp"
+    else:
+        # For other languages, use the family mapping
+        font_category = FONT_FAMILY_MAPPING.get(font_family, "sans")
+    
+    # Get available styles for this font category
+    available_styles = FONT_STYLE_MAPPING.get(font_category, {})
+    
+    # Try to get the exact style, fallback to regular
+    font_path = available_styles.get(font_style)
+    if not font_path:
+        font_path = available_styles.get("regular")
+        font_style = "regular"  # Update font_style to match what we're actually using
+    
+    if font_path and os.path.exists(font_path):
+        # Generate a unique font name for ReportLab registration
+        font_name = f"Mapped_{font_category}_{font_style}_{target_language}"
+        
+        # Register the font with ReportLab if not already registered
+        if font_name not in pdfmetrics.getRegisteredFontNames():
+            try:
+                pdfmetrics.registerFont(TTFont(font_name, font_path))
+                logger.info(f"FONT REGISTERED: {font_name} from {font_path}")
+            except Exception as e:
+                logger.warning(f"Failed to register font {font_name}: {e}")
+                return None, None
+        
+        return font_path, font_name
+    
+    return None, None
 
 
 # Function to create white masks over original text
@@ -263,7 +483,7 @@ def map_to_standard_font(original_font):
 def get_appropriate_font(paragraph, target_language="vi"):
     """
     Determine appropriate font based on target language and paragraph data.
-    This function now prioritizes using the exact font_name extracted from the PDF.
+    Maps fonts with proper style preservation: sans fonts -> NotoSans (with style), serif fonts -> NotoSerif (with style).
 
     Args:
         paragraph: The paragraph data containing font information
@@ -275,204 +495,49 @@ def get_appropriate_font(paragraph, target_language="vi"):
     # Get original font from paragraph (this is the fontname extracted from the PDF)
     original_font = paragraph.get("font_name", "Helvetica")
 
-    # Log the original font for debugging
     logger.debug(
-        f"Font selection - Extracted font: '{original_font}', Target language: {target_language}"
+        f"Font selection - Original font: '{original_font}', Target language: {target_language}"
     )
 
-    # Use the improved font selection logic that prioritizes Google Fonts matching
-    font = get_font_for_target_language(target_language, original_font)
-    logger.debug(f"Selected font: '{font}' for extracted font '{original_font}'")
+    # Parse the original font name to extract family and style
+    font_family, font_style = parse_font_name(original_font)
+    logger.info(f"FONT PARSING: '{original_font}' -> family: '{font_family}', style: '{font_style}'")
 
-    # Verify font exists in ReportLab's registry
-    if font not in pdfmetrics.getRegisteredFontNames() and font not in [
-        "Helvetica",
-        "Times-Roman",
-        "Courier",
-        "Symbol",
-    ]:
-        logger.warning(
-            f"Font '{font}' not registered with ReportLab, falling back to Helvetica"
-        )
-        font = "Helvetica"
+    # Use the proper font mapping function that handles styles
+    font_path, font_name = get_mapped_font_path(font_family, font_style, target_language)
+    
+    if font_name:
+        logger.info(f"FONT SELECTED: {font_name} (path: {font_path})")
+        return font_name
+    else:
+        # Fallback to basic font without style if styled version not found
+        logger.warning(f"FONT FALLBACK: No styled font found for {font_family} {font_style}, using basic font")
+        return get_fallback_font(target_language)
 
-    return font
+
+def get_fallback_font(target_language="vi"):
+    """
+    Get a reliable fallback font for the target language.
+    
+    Args:
+        target_language: Target language code
+        
+    Returns:
+        Font name that is guaranteed to be available
+    """
+    if target_language == "ja":
+        return "NotoSansJP"
+    return "NotoSans"
 
 
 def register_fonts(font_dir=None):
     """
-    Register additional fonts with ReportLab
+    Register additional fonts with ReportLab (simplified - no Google Fonts download)
 
     Args:
         font_dir: Directory containing font files. If None, uses default locations.
     """
-    global AVAILABLE_FONTS, GOOGLE_FONTS_REGISTRY
-
-    try:
-        # Register standard fonts (these are built-in to ReportLab)
-        logger.info("Using built-in ReportLab fonts for standard text")
-
-        # Create font cache directory if not provided
-        if not font_dir:
-            font_dir = os.path.join(
-                os.path.dirname(os.path.dirname(__file__)), "fonts_cache"
-            )
-            os.makedirs(font_dir, exist_ok=True)
-            logger.info(f"Created font cache directory: {font_dir}")
-
-        # Try to download and register Times New Roman with Vietnamese support via Google Fonts
-        if get_or_download_font:
-            logger.info(
-                "Attempting to download Times New Roman with Vietnamese support"
-            )
-            try:
-                # Try to get Times New Roman or similar serif font with Vietnamese support
-                tnr_path, tnr_name = get_or_download_font(
-                    "Times New Roman", "regular", font_dir, "vi"
-                )
-                if tnr_path and os.path.exists(tnr_path):
-                    font_name = "TimesNewRomanVN"
-                    pdfmetrics.registerFont(TTFont(font_name, tnr_path))
-                    AVAILABLE_FONTS["times_vi"] = font_name
-                    AVAILABLE_FONTS["vi"] = font_name
-                    GOOGLE_FONTS_REGISTRY[font_name] = tnr_path
-                    logger.info(
-                        f"Registered Google Font for Vietnamese Times New Roman: {font_name}"
-                    )
-
-                    # Note: Font mapping not needed with new approach
-                else:
-                    logger.warning(
-                        "Could not download Times New Roman with Vietnamese support"
-                    )
-
-                # Also try to get NotoSerif Vietnamese as a backup
-                noto_path, noto_name = get_or_download_font(
-                    "Noto Serif", "regular", font_dir, "vi"
-                )
-                if (
-                    noto_path
-                    and os.path.exists(noto_path)
-                    and not AVAILABLE_FONTS.get("vi")
-                ):
-                    font_name = "NotoSerifVietnamese"
-                    pdfmetrics.registerFont(TTFont(font_name, noto_path))
-                    if not AVAILABLE_FONTS.get("times_vi"):
-                        AVAILABLE_FONTS["times_vi"] = font_name
-                    AVAILABLE_FONTS["vi"] = font_name
-                    GOOGLE_FONTS_REGISTRY[font_name] = noto_path
-                    logger.info(
-                        f"Registered Google Font for Vietnamese Noto Serif: {font_name}"
-                    )
-
-                    # Note: Font mapping not needed with new approach
-
-                # Get Japanese font only if target language is Japanese
-                if target_language == "ja":
-                    ja_path, ja_name = get_or_download_font(
-                        "Noto Sans JP", "regular", font_dir, "ja"
-                    )
-                    if ja_path and os.path.exists(ja_path):
-                        font_name = "NotoSansJP-Regular"
-                        pdfmetrics.registerFont(TTFont(font_name, ja_path))
-                        AVAILABLE_FONTS["ja"] = True
-                        GOOGLE_FONTS_REGISTRY[font_name] = ja_path
-                        logger.info(f"Registered Google Font for Japanese: {font_name}")
-                else:
-                    logger.debug(
-                        f"Skipping Japanese font download - target language is {target_language}"
-                    )
-            except Exception as e:
-                logger.error(f"Error during font registration: {e}")
-
-        # Register special case fonts from local files if provided
-        if os.path.exists(font_dir):
-            # Try to register Japanese font from local file only if needed
-            if target_language == "ja" and not AVAILABLE_FONTS.get("ja"):
-                ja_font_path = os.path.join(font_dir, "NotoSansJP-Regular.ttf")
-                if os.path.exists(ja_font_path):
-                    try:
-                        pdfmetrics.registerFont(
-                            TTFont("NotoSansJP-Regular", ja_font_path)
-                        )
-                        AVAILABLE_FONTS["ja"] = True
-                        logger.info("Registered Japanese font: NotoSansJP-Regular")
-                    except Exception as e:
-                        logger.error(f"Failed to register Japanese font: {e}")
-                else:
-                    # Try alternative Japanese font name/extension
-                    ja_font_path = os.path.join(font_dir, "NotoSansJP-Regular.otf")
-                    if os.path.exists(ja_font_path):
-                        try:
-                            pdfmetrics.registerFont(
-                                TTFont("NotoSansJP-Regular", ja_font_path)
-                            )
-                            AVAILABLE_FONTS["ja"] = True
-                            logger.info(
-                                "Registered Japanese font: NotoSansJP-Regular (OTF)"
-                            )
-                        except Exception as e:
-                            logger.error(f"Failed to register Japanese font (OTF): {e}")
-                    else:
-                        logger.warning(f"Japanese font not found at {ja_font_path}")
-            else:
-                logger.debug(
-                    f"Skipping local Japanese font registration - target language is {target_language}"
-                )
-
-            # Try to register Times New Roman Vietnamese font from local file if not already loaded
-            if not AVAILABLE_FONTS.get("times_vi"):
-                times_vn_font_path = os.path.join(font_dir, "TimesNewRomanVN.ttf")
-                if os.path.exists(times_vn_font_path):
-                    try:
-                        pdfmetrics.registerFont(
-                            TTFont("TimesNewRomanVN", times_vn_font_path)
-                        )
-                        AVAILABLE_FONTS["times_vi"] = "TimesNewRomanVN"
-                        AVAILABLE_FONTS["vi"] = "TimesNewRomanVN"
-                        logger.info(
-                            "Registered Times New Roman Vietnamese font from local file"
-                        )
-
-                        # Note: Font mapping not needed with new approach
-                    except Exception as e:
-                        logger.error(
-                            f"Failed to register Times New Roman Vietnamese font: {e}"
-                        )
-                else:
-                    logger.warning(
-                        f"Times New Roman Vietnamese font not found at {times_vn_font_path}"
-                    )
-
-            # Register any additional TTF files in the font directory
-            for file in os.listdir(font_dir):
-                if (
-                    file.endswith(".ttf")
-                    and not file.startswith("Noto")
-                    and not file.startswith("DejaVu")
-                ):
-                    try:
-                        font_path = os.path.join(font_dir, file)
-                        # Extract font name from filename (remove extension)
-                        font_name = os.path.splitext(file)[0]
-
-                        # Register the font if not already registered
-                        if (
-                            font_name not in GOOGLE_FONTS_REGISTRY
-                            and font_name not in pdfmetrics.getRegisteredFontNames()
-                        ):
-                            pdfmetrics.registerFont(TTFont(font_name, font_path))
-                            GOOGLE_FONTS_REGISTRY[font_name] = font_path
-                            logger.info(f"Registered additional font: {font_name}")
-                    except Exception as e:
-                        logger.error(f"Failed to register font {file}: {e}")
-        else:
-            logger.warning(
-                "No valid font directory provided, using system defaults only"
-            )
-
-    except Exception as e:
-        logger.error(f"Error registering fonts: {e}. Using system defaults.")
+    logger.info("Using local Noto fonts only - no Google Fonts download")
 
 
 def draw_fitted_text(
@@ -486,14 +551,13 @@ def draw_fitted_text(
         paragraph: Original paragraph data
         fitted_lines: List of lines from text fitting
         x, y: Base position coordinates
-        font_name: Font to use
+        font_name: Font to use (ignored, will be determined by target language)
         font_size: Font size to use
         color: Text color
         target_language: Target language code (e.g., 'vi', 'en', 'ja')
     """
     try:
-        # Get appropriate font for the target language, using the original font extracted from PDF
-        # Only Japanese gets special handling
+        # Get appropriate font for the target language
         font = get_appropriate_font(paragraph, target_language)
 
         # Log font selection for debugging
@@ -501,16 +565,19 @@ def draw_fitted_text(
             f"Original font: {paragraph.get('font_name', 'Unknown')}, Selected font: {font}"
         )
 
-        # Ensure we use a font that's guaranteed to exist in ReportLab
+        # Reduce font size by 10%
+        adjusted_font_size = font_size * 0.9
+        
+        # Set the font
         try:
-            c.setFont(font, font_size)
-            logger.debug(f"Using font: {font} for text: {paragraph['text'][:30]}...")
+            c.setFont(font, adjusted_font_size)
+            logger.debug(f"Using font: {font} with adjusted size: {adjusted_font_size:.1f} (original: {font_size:.1f})")
         except Exception as e:
             # If font setting fails, fall back to Helvetica
             logger.warning(
                 f"Font '{font}' not available ({str(e)}), falling back to Helvetica"
             )
-            c.setFont("Helvetica", font_size)
+            c.setFont("Helvetica", adjusted_font_size)
 
         # Set color (default to black if not provided)
         if color:
@@ -523,18 +590,14 @@ def draw_fitted_text(
         else:
             c.setFillColorRGB(0, 0, 0)  # Default black
 
-        # Calculate line height
-        line_height = font_size * 1.2  # Add some leading
+        # Calculate line height using adjusted font size
+        line_height = adjusted_font_size * 1.2  # Add some leading
 
         # Draw each line
         for i, line in enumerate(fitted_lines):
             # Position is from bottom, so we start at y and go up for each line
             line_y = y + (len(fitted_lines) - 1 - i) * line_height
             c.drawString(x, line_y, line)
-
-            # Log the drawn text for debugging
-            if i == 0:  # Only log the first line to avoid spam
-                logger.debug(f"Drew text with font {font}: {line[:30]}...")
 
     except Exception as e:
         logger.error(f"Error drawing text: {str(e)}")
@@ -613,13 +676,17 @@ def generate_overlay(
                 if "fitted_lines" in para and para["fitted_lines"]:
                     # Get target language from paragraph if available, otherwise use default
                     lang = para.get("target_language", target_language)
+                    
+                    # Get appropriate font based on original font and target language
+                    selected_font = get_appropriate_font(para, lang)
+                    
                     draw_fitted_text(
                         c,
                         para,
                         para["fitted_lines"],
                         x,
                         y,
-                        font_name,
+                        selected_font,
                         font_size,
                         color,
                         target_language=lang,

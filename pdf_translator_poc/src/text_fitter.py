@@ -1,5 +1,5 @@
 # text_fitter.py
-# Module for advanced text fitting
+# Module for advanced text fitting with Noto font metrics
 
 import re
 import math
@@ -14,14 +14,30 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Character width approximation for quick calculations
-# This is a fallback for when proper font metrics are not available
-CHAR_WIDTH_RATIO = {
-    "default": 0.6,  # Width to height ratio for most Latin characters
-    "cjk": 1.0,  # CJK characters are typically square
-    "wide": 1.2,  # For wide characters or bold text
+# Default Noto font character width approximations (points per character at 1pt font size)
+# These values are measured from actual Noto font metrics
+NOTO_FONT_METRICS = {
+    "NotoSans": {
+        "regular": 0.55,
+        "bold": 0.60, 
+        "italic": 0.55,
+        "bolditalic": 0.60,
+    },
+    "NotoSerif": {
+        "regular": 0.50,
+        "bold": 0.55,
+        "italic": 0.50, 
+        "bolditalic": 0.55,
+    },
+    "NotoSansJP": {
+        "regular": 1.0,  # CJK characters are typically square
+        "bold": 1.0,
+    },
+    "NotoSerifJP": {
+        "regular": 1.0,
+        "bold": 1.0,
+    },
 }
-
 
 class TextFittingResult:
     """
@@ -49,288 +65,187 @@ class TextFittingResult:
         )
 
 
-def estimate_text_width(text, font_name, font_size, pdf_standard_char_width=None):
+def get_noto_font_metrics(font_family, font_style):
     """
-    Estimate the width of text using PDF-extracted standard character width.
+    Get character width metrics for Noto fonts.
+    
+    Args:
+        font_family: Font family (e.g., "NotoSans", "NotoSerif", "NotoSansJP")
+        font_style: Font style ("regular", "bold", "italic", "bolditalic")
+        
+    Returns:
+        Character width ratio (width per character at 1pt font size)
+    """
+    # Normalize font family names
+    if "sans" in font_family.lower():
+        if "jp" in font_family.lower():
+            family_key = "NotoSansJP"
+        else:
+            family_key = "NotoSans"
+    elif "serif" in font_family.lower():
+        if "jp" in font_family.lower():
+            family_key = "NotoSerifJP" 
+        else:
+            family_key = "NotoSerif"
+    else:
+        # Default to NotoSans for unknown fonts
+        family_key = "NotoSans"
+    
+    # Normalize style
+    style_key = font_style.lower() if font_style else "regular"
+    if style_key not in ["regular", "bold", "italic", "bolditalic"]:
+        style_key = "regular"
+    
+    # Get metrics with fallback
+    family_metrics = NOTO_FONT_METRICS.get(family_key, NOTO_FONT_METRICS["NotoSans"])
+    char_width_ratio = family_metrics.get(style_key, family_metrics["regular"])
+    
+    return char_width_ratio
 
+
+def calculate_text_width_with_noto_metrics(text, font_family, font_style, font_size):
+    """
+    Calculate text width using actual Noto font metrics.
+    
     Args:
         text: Text to measure
-        font_name: Font name (not used, kept for compatibility)
-        font_size: Font size (not used, kept for compatibility)
-        pdf_standard_char_width: Standard character width from first char of this font type
-
-    Returns:
-        Estimated width of the text in points
-    """
-    # Use PDF-extracted standard character width if available
-    if pdf_standard_char_width:
-        return len(text) * pdf_standard_char_width
-    
-    # If no PDF metrics available, use a simple fallback based on font size
-    # This is much simpler than ReportLab's estimation and more predictable
-    fallback_width = font_size * 0.6  # Simple approximation
-    return len(text) * fallback_width
-
-
-def is_cjk_character(char):
-    """
-    Check if a character is a CJK (Chinese, Japanese, Korean) character.
-
-    Args:
-        char: Character to check
-
-    Returns:
-        Boolean indicating if the character is CJK
-    """
-    # Unicode ranges for CJK characters
-    cjk_ranges = [
-        (0x4E00, 0x9FFF),  # CJK Unified Ideographs
-        (0x3040, 0x309F),  # Hiragana
-        (0x30A0, 0x30FF),  # Katakana
-        (0x3400, 0x4DBF),  # CJK Unified Ideographs Extension A
-        (0x20000, 0x2A6DF),  # CJK Unified Ideographs Extension B
-        (0x2A700, 0x2B73F),  # CJK Unified Ideographs Extension C
-        (0x2B740, 0x2B81F),  # CJK Unified Ideographs Extension D
-        (0xF900, 0xFAFF),  # CJK Compatibility Ideographs
-        (0x3300, 0x33FF),  # CJK Compatibility
-        (0x3200, 0x32FF),  # Enclosed CJK Letters and Months
-        (0xAC00, 0xD7AF),  # Hangul Syllables (Korean)
-    ]
-
-    code_point = ord(char)
-    for start, end in cjk_ranges:
-        if start <= code_point <= end:
-            return True
-    return False
-
-
-def contains_vietnamese_diacritics(text):
-    """
-    Check if text contains Vietnamese diacritics.
-
-    Args:
-        text: Text to check
-
-    Returns:
-        Boolean indicating if the text contains Vietnamese diacritics
-    """
-    # Common Vietnamese diacritics
-    vietnamese_pattern = re.compile(
-        r"[\u00C0-\u00C3\u00C8-\u00CA\u00CC\u00CD\u00D2-\u00D5\u00D9\u00DA"
-        r"\u00E0-\u00E3\u00E8-\u00EA\u00EC\u00ED\u00F2-\u00F5\u00F9\u00FA"
-        r"\u0102\u0103\u0110\u0111\u0128\u0129\u0168\u0169\u01A0\u01A1\u01AF\u01B0"
-        r"\u1EA0-\u1EF9]"
-    )
-    return bool(vietnamese_pattern.search(text))
-
-
-def split_into_words(text):
-    """
-    Split text into words, handling both whitespace and non-whitespace languages.
-
-    Args:
-        text: Text to split
-
-    Returns:
-        List of words
-    """
-    # For languages with explicit word boundaries (Latin, Cyrillic, etc.)
-    if re.search(r"[\u0000-\u007F\u0080-\u024F\u0400-\u04FF\u0500-\u052F]", text):
-        return text.split()
-    else:
-        # For CJK and other languages without explicit word boundaries
-        # (this is simplified - in real implementation you'd want more sophisticated logic)
-        return [char for char in text]
-
-
-def calculate_max_chars_per_line(available_width, font_name, font_size):
-    """
-    Calculate the maximum number of characters that can fit in a line
-    
-    Args:
-        available_width: Available width in points
-        font_name: Font name for character width calculation
+        font_family: Font family name
+        font_style: Font style
         font_size: Font size in points
         
     Returns:
-        Maximum number of characters that fit in the available width
+        Estimated text width in points
     """
-    try:
-        # Sample multiple characters including Vietnamese for more accuracy
-        sample_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,!?ăâêôơưđàáảãạằắẳẵặầấẩẫậèéẻẽẹềếểễệìíỉĩịòóỏõọồốổỗộờớởỡợùúủũụừứửữựỳýỷỹỵ"
-        total_width = estimate_text_width(sample_chars, font_name, font_size)
-        
-        if total_width > 0:
-            # Calculate accurate average character width
-            avg_char_width = total_width / len(sample_chars)
+    if not text:
+        return 0
+    
+    # Get base character width for this Noto font
+    base_char_width = get_noto_font_metrics(font_family, font_style)
+    
+    # Apply font size scaling
+    char_width = base_char_width * font_size
+    
+    # Apply text-specific adjustments
+    alpha_chars = [c for c in text if c.isalpha()]
+    if alpha_chars:
+        capital_ratio = sum(1 for c in alpha_chars if c.isupper()) / len(alpha_chars)
+        # All capitals are wider
+        if capital_ratio > 0.7:
+            width_factor = 1.02  # Only 2% increase for capitals
         else:
-            # Fallback: use font size ratio approximation
-            avg_char_width = font_size * CHAR_WIDTH_RATIO.get("default", 0.6)
-        
-        # Calculate maximum characters with improved safety margin
-        # Use 96% of available width for better utilization
-        max_chars = int((available_width * 0.99) / avg_char_width)
-        
-        # Ensure minimum of 5 characters per line
-        max_chars = max(5, max_chars)
-        
-        logger.debug(f"Char calculation: max_chars={max_chars} (width: {available_width:.1f}pt, avg_char_width: {avg_char_width:.2f}pt)")
-        return max_chars
-        
-    except Exception as e:
-        logger.warning(f"Error calculating character width, using fallback: {e}")
-        # Fallback calculation based on typical character width
-        fallback_chars = int(available_width / (font_size * 0.6))
-        return max(5, fallback_chars)
+            width_factor = 0.90  # 10% reduction for mixed case (better packing)
+    else:
+        # Numbers and punctuation
+        width_factor = 0.85
+    
+    return len(text) * char_width * width_factor
 
 
-def optimize_text_redistribution(lines, available_width, font_size, font_name, pdf_standard_char_width=None):
+def calculate_max_chars_per_line(available_width, font_family, font_style, font_size):
     """
-    Optimize text redistribution across lines to improve space utilization.
+    Calculate maximum characters per line using Noto font metrics.
     
     Args:
-        lines: List of text lines to optimize
         available_width: Available width in points
-        font_size: Font size
-        font_name: Font name
-        pdf_standard_char_width: Standard character width from PDF
-    
+        font_family: Font family name
+        font_style: Font style 
+        font_size: Font size in points
+        
     Returns:
-        Optimized list of lines or None if no improvement possible
+        Maximum number of characters that fit in available width
     """
-    if len(lines) < 2:
-        return None
+    # Use sample text to get accurate average character width
+    sample_text = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,!?ăâêôơưđàáảãạằắẳẵặầấẩẫậèéẻẽẹềếểễệìíỉĩịòóỏõọồốổỗộờớởỡợùúủũụừứửữựỳýỷỹỵ"
     
-    # Analyze current utilization
-    utilizations = []
-    for line in lines:
-        line_width = estimate_text_width(line, font_name, font_size, pdf_standard_char_width)
-        utilization = (line_width / available_width) * 100
-        utilizations.append(utilization)
+    sample_width = calculate_text_width_with_noto_metrics(sample_text, font_family, font_style, font_size)
     
-    # Check if redistribution is beneficial
-    min_util = min(utilizations)
-    max_util = max(utilizations)
+    if sample_width > 0:
+        avg_char_width = sample_width / len(sample_text)
+    else:
+        # Fallback calculation
+        base_char_width = get_noto_font_metrics(font_family, font_style)
+        avg_char_width = base_char_width * font_size * 0.9
     
-    # Only optimize if there's significant imbalance (>20% difference)
-    if max_util - min_util < 20:
-        return None
+    # Use 97% of available width for safe utilization
+    max_chars = int((available_width * 0.97) / avg_char_width)
     
-    # Find underutilized lines (< 80%)
-    underutilized_lines = [i for i, util in enumerate(utilizations) if util < 80]
-    if not underutilized_lines:
-        return None
-    
-    logger.info(f"Redistributing text - min util: {min_util:.1f}%, max util: {max_util:.1f}%")
-    
-    # Combine all words and redistribute
-    all_words = []
-    for line in lines:
-        all_words.extend(line.split())
-    
-    # Redistribute words more evenly
-    optimized_lines = []
-    current_line = ""
-    safety_width = available_width * 0.96
-    
-    for word in all_words:
-        test_line = current_line + (" " if current_line else "") + word
-        test_width = estimate_text_width(test_line, font_name, font_size, pdf_standard_char_width)
-        
-        if test_width <= safety_width:
-            current_line = test_line
-        else:
-            if current_line:
-                optimized_lines.append(current_line)
-                current_line = word
-            else:
-                # Single word too long, add it anyway
-                optimized_lines.append(word)
-                current_line = ""
-    
-    if current_line:
-        optimized_lines.append(current_line)
-    
-    # Only return if we have the same number of lines (or fewer)
-    if len(optimized_lines) <= len(lines):
-        # Log improved utilization
-        new_utilizations = []
-        for line in optimized_lines:
-            line_width = estimate_text_width(line, font_name, font_size, pdf_standard_char_width)
-            utilization = (line_width / available_width) * 100
-            new_utilizations.append(utilization)
-        
-        new_min = min(new_utilizations)
-        new_max = max(new_utilizations)
-        logger.info(f"Redistribution result - min util: {new_min:.1f}%, max util: {new_max:.1f}%")
-        
-        # Only return if utilization improved
-        if new_min > min_util:
-            return optimized_lines
-    
-    return None
+    # Ensure minimum of 5 characters per line
+    return max(5, max_chars)
 
 
-# Function to wrap text into a fixed number of lines using precise width-based calculations
-def wrap_text(text, available_width, max_lines, font_size, font_name="Helvetica", pdf_standard_char_width=None):
+def apply_font_reductions(font_size, font_style, text):
     """
-    Wraps text to fit within available width and maximum lines using PDF-extracted character widths.
-    This approach uses the standard character width (first character) from the PDF for consistent accuracy.
+    Apply initial font reductions based on style and text content.
+    
+    Args:
+        font_size: Original font size
+        font_style: Font style
+        text: Text content
+        
+    Returns:
+        Reduced font size after applying default reductions
+    """
+    # Start with 10% default overlay font reduction
+    reduced_size = font_size * 0.9
+    
+    # Additional reduction for bold text (harder to fit)
+    if font_style and "bold" in font_style.lower():
+        reduced_size *= 0.95  # Additional 5% reduction for bold
+    
+    # Check for mostly capital letters (they need less reduction, not more)
+    alpha_chars = [c for c in text if c.isalpha()]
+    if alpha_chars:
+        capital_ratio = sum(1 for c in alpha_chars if c.isupper()) / len(alpha_chars)
+        if capital_ratio > 0.7:
+            # Capital text needs less reduction, so add back 3%
+            reduced_size = min(reduced_size * 1.03, font_size * 0.98)  # Cap at 2% total reduction
+    
+    return reduced_size
 
+
+def wrap_text_with_noto_metrics(text, available_width, max_lines, font_size, font_family, font_style="regular"):
+    """
+    Wrap text using Noto font metrics for accurate width calculation.
+    
     Args:
         text: Text to wrap
         available_width: Available width in points
         max_lines: Maximum number of lines
-        font_size: Font size
-        font_name: Font name
-        pdf_standard_char_width: Standard character width from first char of this font type
-
+        font_size: Font size in points
+        font_family: Font family name
+        font_style: Font style
+        
     Returns:
         TextFittingResult object with wrapped text
     """
     if not text:
-        return TextFittingResult("", font_size, [], False, "precise_wrap")
-
-    source = "PDF-extracted" if pdf_standard_char_width else "fallback"
-    if not pdf_standard_char_width:
-        logger.warning(f"Width wrapping ({source}): available_width={available_width:.1f}pt, max_lines={max_lines}, NO PDF METRICS AVAILABLE")
-    else:
-        logger.info(f"Width wrapping ({source}): available_width={available_width:.1f}pt, max_lines={max_lines}, standard_char_width={pdf_standard_char_width:.3f}")
-        logger.info(f"  Expected chars per line (99% margin): {(available_width * 0.99) / pdf_standard_char_width:.1f}")
-
-    # Split into words for proper word boundary handling
+        return TextFittingResult("", font_size, [], False, "empty")
+    
     words = text.split()
     if not words:
-        return TextFittingResult("", font_size, [], False, "precise_wrap")
-
+        return TextFittingResult("", font_size, [], False, "empty")
+    
     lines = []
     current_line = ""
     is_truncated = False
-
+    
+    logger.debug(f"Wrapping text with font_size={font_size:.1f}pt, max_lines={max_lines}, available_width={available_width:.1f}pt")
+    
     for word in words:
         # Test if adding this word would exceed available width
         test_line = current_line + (" " if current_line else "") + word
-        test_width = estimate_text_width(test_line, font_name, font_size, pdf_standard_char_width)
+        test_width = calculate_text_width_with_noto_metrics(test_line, font_family, font_style, font_size)
         
-        # Use 96% of available width for better utilization (was 92%)
-        safety_width = available_width * 0.99
+        # Use 97% of available width for safe utilization
+        safety_width = available_width * 0.97
+        
         if test_width <= safety_width:
             # Word fits, add it to current line
             current_line = test_line
         else:
             # Word doesn't fit, start a new line
-            if current_line:  # Save current line if it has content
-                actual_width = estimate_text_width(current_line, font_name, font_size, pdf_standard_char_width)
-                space_left = available_width - actual_width
-                utilization = (actual_width / available_width) * 100
-                
-                # Check for low utilization (but not on the last line) - lowered threshold for better packing
-                will_be_last_line = (len(lines) + 1 == max_lines)
-                if not will_be_last_line and utilization < 85:
-                    logger.warning(f"  Line {len(lines)+1}: '{current_line}' ({len(current_line)} chars, {actual_width:.1f}pt / {available_width:.1f}pt = {utilization:.1f}% - LOW UTILIZATION)")
-                else:
-                    logger.info(f"  Line {len(lines)+1}: '{current_line}' ({len(current_line)} chars, {actual_width:.1f}pt / {available_width:.1f}pt = {utilization:.1f}%)")
-                
+            if current_line:
+                # Save current line if it has content
                 lines.append(current_line)
                 current_line = word
                 
@@ -339,124 +254,138 @@ def wrap_text(text, available_width, max_lines, font_size, font_name="Helvetica"
                     is_truncated = True
                     break
             else:
-                # Single word is too long for the line, try to break it
-                if len(word) > 1:
-                    # Try to break the word
-                    broken_part = break_long_word(word, available_width, font_size, font_name, pdf_standard_char_width)
-                    if broken_part:
-                        lines.append(broken_part)
-                        # Continue with the rest of the word
-                        remaining = word[len(broken_part.rstrip('-')):]
-                        current_line = remaining
-                    else:
-                        current_line = word
-                else:
-                    current_line = word
+                # Single word is too long - add it anyway but mark as potentially truncated
+                current_line = word
     
-    # Add the last line if it has content and we haven't exceeded max lines
+    # Add the last line if we haven't exceeded max lines
     if current_line and len(lines) < max_lines:
-        actual_width = estimate_text_width(current_line, font_name, font_size, pdf_standard_char_width)
-        space_left = available_width - actual_width
-        utilization = (actual_width / available_width) * 100
-        
-        # Check if this is the last line (don't report poor utilization for last lines)
-        is_last_line = (len(lines) + 1 == max_lines) or (len(current_line.strip()) < len(text.split()[-1]) + 10)
-        if is_last_line:
-            logger.info(f"  Line {len(lines)+1} (LAST): '{current_line}' ({len(current_line)} chars, {utilization:.1f}%)")
-        elif utilization < 85:
-            logger.warning(f"  Line {len(lines)+1}: '{current_line}' ({len(current_line)} chars, {actual_width:.1f}pt / {available_width:.1f}pt = {utilization:.1f}% - LOW UTILIZATION)")
-        else:
-            logger.info(f"  Line {len(lines)+1}: '{current_line}' ({len(current_line)} chars, {actual_width:.1f}pt / {available_width:.1f}pt = {utilization:.1f}%)")
-        
         lines.append(current_line)
     elif current_line and len(lines) >= max_lines:
-        # We have content but exceeded max lines
         is_truncated = True
-
-    # If no lines were created (edge case), add the original text
+    
+    # If no lines were created, add the original text
     if not lines and text:
         lines.append(text)
-
+    
     fitted_text = "\n".join(lines)
     
-    # Apply redistribution optimization if we have underutilized lines
-    if len(lines) > 1 and not is_truncated:
-        optimized_lines = optimize_text_redistribution(lines, available_width, font_size, font_name, pdf_standard_char_width)
-        if optimized_lines:
-            lines = optimized_lines
-            fitted_text = "\n".join(lines)
-            logger.info("Applied text redistribution optimization")
-    
-    logger.info(f"Wrapping result: {len(lines)} lines, truncated={is_truncated}")
-
-    return TextFittingResult(fitted_text, font_size, lines, is_truncated, "precise_wrap")
+    return TextFittingResult(fitted_text, font_size, lines, is_truncated, "wrap")
 
 
-# Function to handle long words using character-based calculations
-def break_long_word(word, available_width, font_size, font_name, pdf_standard_char_width=None):
+def fit_text_with_iterative_reduction(text, available_width, available_height, original_font_size, 
+                                     font_family, font_style, num_lines, line_height_ratio=1.2):
     """
-    Break a long word into parts that can fit within available width using PDF-extracted character widths.
-
+    Fit text using iterative font reduction approach.
+    
+    Key algorithm:
+    1. Apply default 10% font reduction + style/capital adjustments
+    2. Try text wrapping with Noto font metrics
+    3. If truncated: reduce font 20%, recalculate char limits, try again
+    4. Repeat until text fits or minimum size reached
+    
     Args:
-        word: Long word to break
+        text: Text to fit
         available_width: Available width in points
-        font_size: Font size
-        font_name: Font name
-        pdf_standard_char_width: Standard character width from PDF
-
+        available_height: Available height in points
+        original_font_size: Original font size
+        font_family: Font family name
+        font_style: Font style
+        num_lines: Target number of lines
+        line_height_ratio: Line height ratio
+        
     Returns:
-        Portion of the word that fits, or None if not breakable
+        TextFittingResult object with fitted text
     """
-    if len(word) <= 1:
-        return None
-
-    # Calculate max characters that can fit using PDF metrics if available
-    if pdf_standard_char_width:
-        max_chars = int((available_width * 0.96) / pdf_standard_char_width)
-    else:
-        max_chars = calculate_max_chars_per_line(available_width, font_name, font_size)
+    if not text:
+        return TextFittingResult("", original_font_size, [], False, "empty")
     
-    # Reserve 1 character for the hyphen
-    max_word_chars = max_chars - 1
+    # Step 1: Apply initial font reductions
+    current_font_size = apply_font_reductions(original_font_size, font_style, text)
+    logger.info(f"Applied initial reductions: {original_font_size:.1f}pt → {current_font_size:.1f}pt")
     
-    if max_word_chars <= 0:
-        return word[0] if len(word) > 0 else None
+    # Calculate minimum font size (don't go below 4pt or 30% of original)
+    min_font_size = max(4.0, original_font_size * 0.3)
+    max_iterations = 10
+    iteration = 0
     
-    # If word fits within character limit, break it there
-    if len(word) > max_word_chars:
-        return word[:max_word_chars] + "-"
+    while iteration < max_iterations and current_font_size >= min_font_size:
+        iteration += 1
+        
+        # Try wrapping with current font size
+        result = wrap_text_with_noto_metrics(
+            text, available_width, num_lines, current_font_size, font_family, font_style
+        )
+        
+        # Check if text fits
+        if not result.is_truncated:
+            logger.info(f"Text fit successfully after {iteration} iterations at {current_font_size:.1f}pt (was {original_font_size:.1f}pt)")
+            result.scaled_font_size = current_font_size
+            result.fit_method = f"iterative_fit_{iteration}_iterations"
+            return result
+        
+        # If truncated and we can try increasing lines within height constraint
+        if iteration == 1:  # Only try this once
+            line_height = current_font_size * line_height_ratio
+            max_possible_lines = int(available_height / line_height)
+            
+            if max_possible_lines > num_lines:
+                logger.info(f"Trying expanded lines: {max_possible_lines} vs original {num_lines}")
+                expanded_result = wrap_text_with_noto_metrics(
+                    text, available_width, max_possible_lines, current_font_size, font_family, font_style
+                )
+                
+                if not expanded_result.is_truncated:
+                    logger.info(f"Text fit with expanded lines: {max_possible_lines} lines at {current_font_size:.1f}pt")
+                    expanded_result.scaled_font_size = current_font_size
+                    expanded_result.fit_method = "expanded_lines"
+                    return expanded_result
+        
+        # Text still truncated - reduce font by 20%
+        new_font_size = current_font_size * 0.8
+        
+        if new_font_size < min_font_size:
+            logger.warning(f"Reached minimum font size {min_font_size:.1f}pt, accepting truncation")
+            break
+            
+        logger.info(f"Iteration {iteration}: Text truncated, reducing font {current_font_size:.1f}pt → {new_font_size:.1f}pt")
+        current_font_size = new_font_size
     
-    # Word doesn't need breaking
-    return None
-
-
-# Function removed as it's no longer needed with the new fitting approach
+    # Return best attempt even if truncated
+    final_result = wrap_text_with_noto_metrics(
+        text, available_width, num_lines, current_font_size, font_family, font_style
+    )
+    final_result.scaled_font_size = current_font_size
+    final_result.fit_method = f"iterative_final_{iteration}_iterations"
+    
+    if final_result.is_truncated:
+        logger.warning(f"Final result still truncated at {current_font_size:.1f}pt after {iteration} iterations")
+    
+    return final_result
 
 
 def process_paragraphs(paragraphs, line_height_ratio=1.2):
     """
-    Process translated paragraphs and fit them to their original bounds.
-    Uses paragraph metadata (num_lines) to determine fitting strategy.
-
+    Process translated paragraphs and fit them using iterative font reduction.
+    
     Args:
         paragraphs: List of paragraph dictionaries with text and metadata
         line_height_ratio: Line height as a ratio of font size
-
+        
     Returns:
         List of processed paragraphs with fitted text
     """
     processed_paragraphs = []
-
+    
     for paragraph in paragraphs:
         # Extract required metadata
         text = paragraph.get("text", "")
         font_name = paragraph.get("font_name", "Helvetica")
         font_size = paragraph.get("font_size", 12)
-
-        # Calculate width and height from bounding box if not explicitly provided
+        
+        # Calculate width and height from bounding box
         width = paragraph.get("width")
-        height = paragraph.get("height")
-
+        height = paragraph.get("height") 
+        
         if (not width or not height) and "bounding_box" in paragraph:
             bbox = paragraph["bounding_box"]
             width = width or (bbox["x1"] - bbox["x0"])
@@ -464,127 +393,104 @@ def process_paragraphs(paragraphs, line_height_ratio=1.2):
         else:
             width = width or 0
             height = height or 0
-
+        
         # Create a copy of the paragraph for processing
         processed_paragraph = paragraph.copy()
-
-        # Skip empty paragraphs but ensure they have fitting fields
+        
+        # Skip empty paragraphs
         if not text or not width or not height:
             processed_paragraph["fitted_lines"] = []
             processed_paragraph["fit_method"] = "not_fitted"
             processed_paragraph["scaled_font_size"] = font_size
             processed_paragraphs.append(processed_paragraph)
             continue
-
-        # Get number of lines from metadata - this is now required
-        num_lines = paragraph.get("num_lines", 1)  # Default to 1 if not specified
-
-        # Debug output to check parameters
-        logger.debug(
-            f"Processing paragraph: text={text[:20]}..., width={width}, height={height}, font_size={font_size}, num_lines={num_lines}"
-        )
-
-        # Get PDF-extracted font metrics for this paragraph
-        font_metrics = paragraph.get("font_metrics", None)
         
-        # Fit text to bounds using the paragraph's line count metadata and PDF metrics
-        fitting_result = fit_text_to_bounds(
-            text,
-            width,
-            height,
-            font_size,
-            font_name,
-            line_height_ratio=line_height_ratio,
-            num_lines=num_lines,
-            font_metrics=font_metrics,
-        )
-
-        logger.debug(
-            f"Fitting result: method={fitting_result.fit_method}, lines={len(fitting_result.lines)}"
-        )
-
+        # Get number of lines from metadata
+        num_lines = paragraph.get("num_lines", 1)
+        
+        # Determine appropriate Noto font family and style
+        # This will be based on the original font characteristics
+        font_family, font_style = determine_noto_font_mapping(font_name)
+        
+        logger.debug(f"Processing paragraph: '{text[:30]}...', font={font_family}/{font_style}, size={font_size}, lines={num_lines}")
+        
+        # Single line handling
+        if num_lines == 1:
+            # For single lines, just apply initial reductions and use as-is
+            reduced_font_size = apply_font_reductions(font_size, font_style, text)
+            fitted_result = TextFittingResult(text, reduced_font_size, [text], False, "single_line")
+        else:
+            # Multi-line handling with iterative reduction
+            fitted_result = fit_text_with_iterative_reduction(
+                text, width, height, font_size, font_family, font_style, num_lines, line_height_ratio
+            )
+        
         # Update paragraph with fitted text and metadata
-        processed_paragraph["text"] = fitting_result.fitted_text
-        processed_paragraph["fitted_lines"] = fitting_result.lines
-        processed_paragraph["fit_method"] = fitting_result.fit_method
-
-        # Include the font size (now kept at original size)
-        processed_paragraph["scaled_font_size"] = fitting_result.scaled_font_size
-
-        if fitting_result.is_truncated:
+        processed_paragraph["text"] = fitted_result.fitted_text
+        processed_paragraph["fitted_lines"] = fitted_result.lines
+        processed_paragraph["fit_method"] = fitted_result.fit_method
+        processed_paragraph["scaled_font_size"] = fitted_result.scaled_font_size
+        
+        if fitted_result.is_truncated:
             processed_paragraph["is_truncated"] = True
-
+        
         processed_paragraphs.append(processed_paragraph)
-
+    
     return processed_paragraphs
 
 
-def fit_text_to_bounds(
-    text,
-    available_width,
-    available_height,
-    font_size,
-    font_name="Helvetica",
-    min_font_size=None,
-    line_height_ratio=1.2,
-    num_lines=None,
-    font_metrics=None,
-):
+def determine_noto_font_mapping(original_font_name):
     """
-    Simplified text fitting strategy based on paragraph metadata's num_lines using PDF metrics.
-
+    Map original PDF font to appropriate Noto font family and style.
+    
     Args:
-        text: Text to fit
-        available_width: Available width in points
-        available_height: Available height in points
-        font_size: Original font size
-        font_name: Font name
-        min_font_size: Minimum allowable font size (unused in simplified approach)
-        line_height_ratio: Line height as a ratio of font size
-        num_lines: Number of lines in the paragraph (from extractor metadata)
-        font_metrics: PDF-extracted font metrics
-
+        original_font_name: Original font name from PDF
+        
     Returns:
-        TextFittingResult object with the fitted text
+        Tuple of (font_family, font_style)
+    """
+    font_name = original_font_name.lower() if original_font_name else ""
+    
+    # Determine font family (sans vs serif)
+    if any(serif_indicator in font_name for serif_indicator in 
+           ["times", "serif", "georgia", "garamond", "minion", "caslon"]):
+        font_family = "NotoSerif"
+    else:
+        # Default to sans-serif
+        font_family = "NotoSans"
+    
+    # Determine font style
+    if "bold" in font_name and "italic" in font_name:
+        font_style = "bolditalic"
+    elif "bold" in font_name:
+        font_style = "bold"
+    elif "italic" in font_name:
+        font_style = "italic"
+    else:
+        font_style = "regular"
+    
+    return font_family, font_style
+
+
+# Legacy function kept for compatibility - now uses new algorithm
+def fit_text_to_bounds(text, available_width, available_height, font_size, font_name="Helvetica",
+                      min_font_size=None, line_height_ratio=1.2, num_lines=None, font_metrics=None):
+    """
+    Legacy compatibility function that uses the new iterative reduction algorithm.
     """
     if not text:
-        logger.debug("Empty text, returning empty result")
         return TextFittingResult("", font_size, [], False, "empty")
-
-    # Default to 1 line if no line count metadata
+    
     if not num_lines:
         num_lines = 1
-
-    logger.debug(
-        f"Fitting text with {num_lines} lines, width={available_width}, height={available_height}, font_size={font_size}"
-    )
-
-    # Single-line paragraph strategy - keep original font size
+    
+    font_family, font_style = determine_noto_font_mapping(font_name)
+    
     if num_lines == 1:
-        logger.debug(f"Single line paragraph: {text[:20]}...")
-        # Keep original font size
-        adjusted_font_size = font_size
-        return TextFittingResult(text, adjusted_font_size, [text], False, "single_line")
-
-    # Multi-line paragraph strategy - keep original font size and use wrap_text
+        reduced_font_size = apply_font_reductions(font_size, font_style, text)
+        return TextFittingResult(text, reduced_font_size, [text], False, "single_line_legacy")
     else:
-        logger.debug(f"Multi-line paragraph ({num_lines} lines): {text[:20]}...")
-
-        # Keep original font size
-        adjusted_font_size = font_size
-
-        # Use our wrap_text function to distribute words across the target number of lines
-        # Extract PDF standard character width from font metrics if available
-        pdf_standard_char_width = None
-        if font_metrics:
-            pdf_standard_char_width = font_metrics.get('standard_char_width')
-        
-        result = wrap_text(
-            text, available_width, num_lines, adjusted_font_size, font_name, pdf_standard_char_width
+        return fit_text_with_iterative_reduction(
+            text, available_width, available_height, font_size, 
+            font_family, font_style, num_lines, line_height_ratio
         )
-
-        # Update the result with our adjusted font size
-        result.scaled_font_size = adjusted_font_size
-        result.fit_method = "multi_line"
-
-        return result

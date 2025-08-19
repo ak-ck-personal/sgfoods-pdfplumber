@@ -2,7 +2,7 @@
 # Configuration file for AWS and font paths
 
 # AWS Translation Configuration
-# AWS_REGION = "us-east-1"
+AWS_REGION = "us-east-1"
 # AWS_ACCESS_KEY_ID = ""  # To be filled by the user
 # AWS_SECRET_ACCESS_KEY = ""  # To be filled by the user
 
@@ -26,3 +26,6 @@ LOG_FILE_PATH = "pdf_translation.log"
 
 # Performance Settings
 BATCH_SIZE = 20  # Number of text blocks to process in one batch
+
+# Google Fonts API Key
+GOOGLE_FONTS_API_KEY = "AIzaSyCcI3Tsez2-2my84piO3cxymkiZ3mhUhr4"
